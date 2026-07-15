@@ -1,0 +1,56 @@
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Packaging and build output
+build/
+dist/
+*.egg-info/
+
+# Ultralytics output and downloaded model weights
+runs/
+yolo*.pt
+*.onnx
+*.engine
+
+# Camera captures and local media
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.webp
+*.mp4
+*.avi
+*.mkv
+*.wav
+*.alaw
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*~
+
+# Editor and operating-system metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

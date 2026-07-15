@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 gaojizhou
+# SPDX-License-Identifier: AGPL-3.0-only
 """A small, dependency-free MCP server for HiSilicon/Hipcam IP cameras.
 
 Credentials are deliberately read only from environment variables.  The server
@@ -23,7 +25,8 @@ HOST = os.environ.get("CAMERA_HOST", "192.168.2.149")
 USERNAME = os.environ.get("CAMERA_USERNAME", "admin")
 PASSWORD = os.environ.get("CAMERA_PASSWORD")
 HTTP_TIMEOUT = float(os.environ.get("CAMERA_TIMEOUT_SECONDS", "10"))
-YOLO_MODEL = os.environ.get("CAMERA_YOLO_MODEL", "yolo11n.pt")
+MCP_DIR = os.path.dirname(os.path.abspath(__file__))
+YOLO_MODEL = os.environ.get("CAMERA_YOLO_MODEL", os.path.join(MCP_DIR, "yolo11n.pt"))
 MAX_CENTERING_MOVES = 12
 MIN_SEARCH_MOVE_STEPS = 4
 PTZ_SETTLE_SECONDS = 2.0
@@ -75,7 +78,10 @@ def capture_rtsp_frame(quality: str) -> bytes:
 
 
 def move_ptz(direction: str, speed: int, steps: int) -> None:
-    codes = {"up": "up", "down": "down", "left": "left", "right": "right", "home": "home"}
+    # This firmware labels vertical CGI actions from the scene's perspective:
+    # its raw "down" action tilts the lens up, and raw "up" tilts it down.
+    # Horizontal actions already match the user-facing camera direction.
+    codes = {"up": "down", "down": "up", "left": "left", "right": "right", "home": "home"}
     if direction not in codes:
         raise ValueError("unsupported direction")
     if direction == "home":
@@ -161,7 +167,9 @@ def detect_objects(jpeg: bytes, targets: list[str], colors: list[str], confidenc
         from PIL import Image
         from ultralytics import YOLO
     except ImportError as error:
-        raise RuntimeError("YOLO is not installed; install dependencies with: python3 -m pip install -r requirements.txt") from error
+        raise RuntimeError(
+            "YOLO is not installed; install this MCP's dependencies from its requirements.txt"
+        ) from error
     if _detector is None:
         _detector = YOLO(YOLO_MODEL)  # Downloads the selected official weight file on first use.
     image = Image.open(io.BytesIO(jpeg)).convert("RGB")

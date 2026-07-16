@@ -23,9 +23,14 @@ import urllib.request
 from typing import Any
 
 
-HOST = os.environ.get("CAMERA_HOST", "192.168.2.149")
+# Camera IP and password are read ONLY from these module globals. They are
+# seeded from environment variables at startup and may be updated at runtime by
+# the set_camera_credentials tool when the user supplies them in the
+# conversation. No other code path accepts them, and the server never contacts
+# the camera except through these values.
+HOST = os.environ.get("CAMERA_HOST", "")
 USERNAME = os.environ.get("CAMERA_USERNAME", "admin")
-PASSWORD = os.environ.get("CAMERA_PASSWORD")
+PASSWORD = os.environ.get("CAMERA_PASSWORD", "")
 HTTP_TIMEOUT = float(os.environ.get("CAMERA_TIMEOUT_SECONDS", "10"))
 MCP_DIR = os.path.dirname(os.path.abspath(__file__))
 YOLO_MODEL = os.environ.get("CAMERA_YOLO_MODEL", os.path.join(MCP_DIR, "yolo11n.pt"))
@@ -47,9 +52,20 @@ def camera_url(path: str, params: dict[str, str] | None = None) -> str:
     return f"http://{HOST}{path}" + (f"?{query}" if query else "")
 
 
+def store_credentials(host: str, username: str, password: str) -> None:
+    """Write the camera IP and credentials into the module globals every camera
+    request reads. This is the only supported way to provide credentials that
+    arrive through the conversation; camera access consults these globals only.
+    """
+    global HOST, USERNAME, PASSWORD
+    HOST, USERNAME, PASSWORD = host, username, password
+
+
 def request(path: str, params: dict[str, str] | None = None, method: str = "GET") -> tuple[bytes, str]:
+    if not HOST:
+        raise ValueError("camera IP is not configured; set CAMERA_HOST or call set_camera_credentials")
     if not PASSWORD:
-        raise ValueError("CAMERA_PASSWORD is not configured")
+        raise ValueError("camera password is not configured; set CAMERA_PASSWORD or call set_camera_credentials")
     token = base64.b64encode(f"{USERNAME}:{PASSWORD}".encode()).decode()
     encoded = urllib.parse.urlencode(params or {}).encode() if method == "POST" else None
     url = camera_url(path, None if method == "POST" else params)
@@ -113,8 +129,10 @@ def prepare_person_tracking() -> None:
 
 def capture_rtsp_frame(quality: str) -> bytes:
     """Return one JPEG frame. Stream 11 is main and stream 12 is sub."""
+    if not HOST:
+        raise ValueError("camera IP is not configured; set CAMERA_HOST or call set_camera_credentials")
     if not PASSWORD:
-        raise ValueError("CAMERA_PASSWORD is not configured")
+        raise ValueError("camera password is not configured; set CAMERA_PASSWORD or call set_camera_credentials")
     stream = "11" if quality == "main" else "12"
     username = urllib.parse.quote(USERNAME, safe="")
     password = urllib.parse.quote(PASSWORD, safe="")
@@ -312,6 +330,7 @@ def wait_for_native_person_center(confidence: float, tolerance: float) -> tuple[
 
 
 TOOLS: list[dict[str, Any]] = [
+    {"name": "set_camera_credentials", "description": "Store the camera IP, username, and password into this server's internal global variables so the other tools can reach the camera. Use this only when the user provides these values in the conversation and they are not already set through environment variables. The server reads the camera IP and password ONLY from these globals and never echoes the password back. Do not use these values to contact the camera yourself; always go through this server's tools.", "inputSchema": {"type": "object", "properties": {"host": {"type": "string", "description": "Camera LAN IP or hostname the user provided."}, "password": {"type": "string", "description": "Camera device password the user provided."}, "username": {"type": "string", "default": "admin", "description": "Camera login username; defaults to admin."}}, "required": ["host", "password"]}},
     {"name": "camera_info", "description": "Read the camera model, hardware version, firmware, and storage status.", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "snapshot", "description": "Capture a current JPEG still image from the selected RTSP stream. If the AI itself recognizes a sought person in this image, it must not stop while that person is off-centre: use bounded ptz_move corrections and fresh snapshots until the person is at frame centre.", "inputSchema": {"type": "object", "properties": {"quality": {"type": "string", "enum": ["main", "sub"], "default": "sub", "description": "Main is stream /11; sub is stream /12."}}}},
     {"name": "rtsp_url", "description": "Return an RTSP stream URL without exposing credentials. Use it with a client configured with the same camera credentials if requested.", "inputSchema": {"type": "object", "properties": {"quality": {"type": "string", "enum": ["main", "sub"], "default": "sub"}}}},
@@ -329,6 +348,18 @@ def text_result(value: str) -> dict[str, Any]:
 def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(arguments, dict):
         raise ValueError("tool arguments must be an object")
+    if name == "set_camera_credentials":
+        host = arguments.get("host", "")
+        password = arguments.get("password", "")
+        username = arguments.get("username", "admin")
+        if not isinstance(host, str) or not host.strip():
+            raise ValueError("host must be a non-empty string")
+        if not isinstance(password, str) or not password:
+            raise ValueError("password must be a non-empty string")
+        if not isinstance(username, str) or not username.strip():
+            raise ValueError("username must be a non-empty string")
+        store_credentials(host.strip(), username.strip(), password)
+        return text_result(f"Stored camera credentials for host {HOST} (user {USERNAME}); the password was saved without being echoed.")
     if name == "find_person":
         prepare_person_tracking()
         arguments = {"confidence": 0.45, "center_tolerance": 0.06, **arguments, "targets": ["person"], "colors": [], "_native_tracking": True}
@@ -340,6 +371,8 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         jpeg = capture_rtsp_frame(arguments.get("quality", "sub"))
         return {"content": [{"type": "image", "data": base64.b64encode(jpeg).decode(), "mimeType": "image/jpeg"}]}
     if name == "rtsp_url":
+        if not HOST:
+            raise ValueError("camera IP is not configured; set CAMERA_HOST or call set_camera_credentials")
         stream = "11" if arguments.get("quality", "sub") == "main" else "12"
         return text_result(f"rtsp://{HOST}:554/{stream}")
     if name == "ptz_move":
@@ -454,8 +487,8 @@ def handle(message: dict[str, Any]) -> None:
             result = {
                 "protocolVersion": protocol_version(params.get("protocolVersion")),
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "hisilicon-ip-camera", "version": "1.2.0"},
-                "instructions": "When asked to find a person, prefer the YOLO-based find_person tool. Regardless of whether a person is found by YOLO or by the AI inspecting snapshot images itself, finding the person is not completion: use PTZ moves plus fresh visual feedback until the person is at the optical centre of the frame before returning the final image. Never leave a found person near an image edge, where optical distortion may deform their appearance.",
+                "serverInfo": {"name": "hisilicon-ip-camera", "version": "1.3.0"},
+                "instructions": "Reach this camera ONLY through the tools this server exposes. Never contact the camera directly - no raw HTTP, CGI, RTSP, curl, wget, or ffmpeg - and never read the stored credentials to connect on your own. The server enforces bounded PTZ motion, explicit stops, native-tracking handoff, and privacy-aware centring that a direct connection would silently bypass. If the user gives you the camera IP and password in the conversation, call set_camera_credentials to store them first, then use the other tools. When asked to find a person, prefer the YOLO-based find_person tool. Regardless of whether a person is found by YOLO or by the AI inspecting snapshot images itself, finding the person is not completion: use PTZ moves plus fresh visual feedback until the person is at the optical centre of the frame before returning the final image. Never leave a found person near an image edge, where optical distortion may deform their appearance.",
             }
         elif method == "ping":
             result = {}

@@ -8,7 +8,7 @@ security notes, so users can install one MCP without pulling in unrelated runtim
 
 | MCP | What it provides | Documentation |
 | --- | --- | --- |
-| HiSilicon IP Camera | Camera snapshots, PTZ control, and YOLO-assisted object search and centering | [Install and use](mcps/hisilicon-camera/README.md) |
+| So I Can See You | Gives AI a pair of eyes that can look around, seek someone, and return a carefully framed photograph | [Install and use](mcps/so-i-can-see-you/README.md) |
 
 ## Repository layout
 
@@ -19,9 +19,9 @@ MCPs/
 ├── .gitignore
 └── mcps/
     ├── README.md
-    └── hisilicon-camera/
+    └── so-i-can-see-you/
         ├── README.md
-        ├── camera_mcp.py
+        ├── so_i_can_see_you_mcp.py
         └── requirements.txt
 ```
 
@@ -34,8 +34,8 @@ Open the server's README and follow its requirements, installation steps, and cl
 Do not assume that every MCP in this repository uses the same language, package manager, virtual
 environment, or transport.
 
-The HiSilicon camera MCP is documented at
-[`mcps/hisilicon-camera/README.md`](mcps/hisilicon-camera/README.md).
+So I Can See You is documented at
+[`mcps/so-i-can-see-you/README.md`](mcps/so-i-can-see-you/README.md).
 
 ## Adding a new MCP
 

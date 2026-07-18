@@ -1,4 +1,3 @@
-import base64
 import importlib.util
 import io
 import json
@@ -16,8 +15,6 @@ NEW_TOOLS = {
     "look_now",
     "share_the_view",
     "turn_the_gaze",
-    "seek_a_person",
-    "search_the_view",
 }
 OLD_TOOLS = {
     "set_camera_credentials",
@@ -27,6 +24,8 @@ OLD_TOOLS = {
     "ptz_move",
     "find_person",
     "patrol_detect",
+    "seek_a_person",
+    "search_the_view",
 }
 
 
@@ -80,7 +79,7 @@ class PublicIdentityTests(unittest.TestCase):
                 }
             )
         response = json.loads(output.getvalue())
-        self.assertEqual(response["result"]["serverInfo"], {"name": "so-i-can-see-you", "version": "2.0.0"})
+        self.assertEqual(response["result"]["serverInfo"], {"name": "so-i-can-see-you", "version": "2.1.0"})
 
     def test_entrust_eyes_never_echoes_password(self):
         server = load_server()
@@ -91,33 +90,6 @@ class PublicIdentityTests(unittest.TestCase):
         rendered = json.dumps(result)
         self.assertNotIn("private-secret", rendered)
         self.assertEqual(server.PASSWORD, "private-secret")
-
-    def test_seek_a_person_disables_tracking_after_final_photo(self):
-        server = load_server()
-        events = []
-        target = {
-            "label": "person",
-            "confidence": 0.9,
-            "box_xyxy": [10, 10, 20, 20],
-            "image_size": [30, 30],
-        }
-        server.prepare_person_tracking = lambda progress: events.append("tracking-enabled")
-        server.detect_current_view = lambda *args, **kwargs: [target]
-
-        def final_photo(*args, **kwargs):
-            events.append("final-photo")
-            return target, b"jpeg", 3
-
-        server.wait_for_native_person_center = final_photo
-        server.set_native_smart_tracking = lambda enabled: events.append(f"tracking-{enabled}")
-
-        result = server.call_tool("seek_a_person", {"moves": []})
-
-        self.assertEqual(events, ["tracking-enabled", "final-photo", "tracking-False"])
-        summary = json.loads(result["content"][0]["text"])
-        self.assertFalse(summary["native_tracking_enabled_after_capture"])
-        self.assertTrue(summary["gaze_fixed_on_position"])
-        self.assertEqual(base64.b64decode(result["content"][1]["data"]), b"jpeg")
 
     def test_tool_call_emits_progress_before_final_response(self):
         server = load_server()

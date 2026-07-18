@@ -8,7 +8,7 @@ security notes, so users can install one MCP without pulling in unrelated runtim
 
 | MCP | What it provides | Documentation |
 | --- | --- | --- |
-| So I Can See You | Gives AI a pair of eyes that can look around, seek someone, and return a carefully framed photograph | [Install and use](mcps/so-i-can-see-you/README.md) |
+| So I Can See You | Gives AI a pair of eyes that can capture camera views and make bounded manual PTZ movements | [Install and use](mcps/so-i-can-see-you/README.md) |
 
 ## Repository layout
 
@@ -21,8 +21,7 @@ MCPs/
     ├── README.md
     └── so-i-can-see-you/
         ├── README.md
-        ├── so_i_can_see_you_mcp.py
-        └── requirements.txt
+        └── so_i_can_see_you_mcp.py
 ```
 
 The repository root contains only collection-level documentation and policy. Every runnable server

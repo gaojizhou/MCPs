@@ -158,6 +158,16 @@ python3 mcps/so-i-can-see-you/so_i_can_see_you_mcp.py
 收到结果后，请诚实告诉用户是否找到、人物是否居中，以及照片是否清楚。不要猜测画面中
 人物的身份，除非用户已经明确告诉你那是谁。
 
+#### 运行中的进度
+
+`seek_a_person` 等耗时工具支持 MCP 标准的 `notifications/progress`。如果客户端在
+`tools/call.params._meta.progressToken` 中提供字符串或整数 token，服务会在最终结果返回
+前报告设置摄像机、YOLO 检测、转动搜索、等待画面稳定、原生追踪居中、高清画面验证和
+关闭追踪等阶段。每次通知的 `progress` 数值都会递增，并带有可读的 `message`。
+
+没有提供 `progressToken` 的客户端仍可正常使用工具，只是调用期间不会收到中间状态。
+进度能否显示在对话或界面中取决于 MCP 客户端；它不会改变最终工具结果的格式。
+
 ### `search_the_view`
 
 用户要寻找车辆、动物或常见物品时调用。当前画面没有目标，它才会执行 `moves`；发现

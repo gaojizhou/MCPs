@@ -101,7 +101,7 @@ class PublicIdentityTests(unittest.TestCase):
             "box_xyxy": [10, 10, 20, 20],
             "image_size": [30, 30],
         }
-        server.prepare_person_tracking = lambda: events.append("tracking-enabled")
+        server.prepare_person_tracking = lambda progress: events.append("tracking-enabled")
         server.detect_current_view = lambda *args, **kwargs: [target]
 
         def final_photo(*args, **kwargs):
@@ -118,6 +118,64 @@ class PublicIdentityTests(unittest.TestCase):
         self.assertFalse(summary["native_tracking_enabled_after_capture"])
         self.assertTrue(summary["gaze_fixed_on_position"])
         self.assertEqual(base64.b64decode(result["content"][1]["data"]), b"jpeg")
+
+    def test_tool_call_emits_progress_before_final_response(self):
+        server = load_server()
+        server.capture_rtsp_frame = lambda quality: b"jpeg"
+        output = io.StringIO()
+        with redirect_stdout(output):
+            server.handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 7,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "look_now",
+                        "arguments": {"quality": "sub"},
+                        "_meta": {"progressToken": "look-7"},
+                    },
+                }
+            )
+        messages = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(messages[0]["method"], "notifications/progress")
+        self.assertEqual(
+            messages[0]["params"],
+            {
+                "progressToken": "look-7",
+                "progress": 1,
+                "message": "Capturing a camera frame",
+            },
+        )
+        self.assertEqual(messages[-1]["id"], 7)
+        self.assertIn("result", messages[-1])
+
+    def test_progress_values_increase_for_one_request(self):
+        server = load_server()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            notify = server.progress_notifier(42)
+            notify("first")
+            notify("second")
+        messages = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual([item["params"]["progress"] for item in messages], [1, 2])
+        self.assertTrue(all(item["params"]["progressToken"] == 42 for item in messages))
+
+    def test_no_progress_token_keeps_single_response_behavior(self):
+        server = load_server()
+        server.capture_rtsp_frame = lambda quality: b"jpeg"
+        output = io.StringIO()
+        with redirect_stdout(output):
+            server.handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 8,
+                    "method": "tools/call",
+                    "params": {"name": "look_now", "arguments": {}},
+                }
+            )
+        messages = output.getvalue().splitlines()
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(json.loads(messages[0])["id"], 8)
 
     def test_legacy_tool_names_are_rejected(self):
         server = load_server()

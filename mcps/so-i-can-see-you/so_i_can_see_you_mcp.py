@@ -20,7 +20,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 
 
 # Camera IP and password are read ONLY from these module globals. They are
@@ -45,6 +45,29 @@ NATIVE_TRACKING_SAMPLE_INTERVAL_SECONDS = 0.5
 _detector: Any | None = None
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07")
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
+ProgressCallback = Callable[[str], None]
+
+
+def no_progress(_message: str) -> None:
+    """Default callback for clients that did not request MCP progress."""
+
+
+def progress_notifier(token: str | int | None) -> ProgressCallback:
+    """Create a monotonically increasing MCP progress notification sender."""
+    if token is None or isinstance(token, bool) or not isinstance(token, (str, int)):
+        return no_progress
+    current = 0
+
+    def notify(message: str) -> None:
+        nonlocal current
+        current += 1
+        respond({
+            "jsonrpc": "2.0",
+            "method": "notifications/progress",
+            "params": {"progressToken": token, "progress": current, "message": message},
+        })
+
+    return notify
 
 
 def camera_url(path: str, params: dict[str, str] | None = None) -> str:
@@ -102,20 +125,23 @@ def set_native_smart_tracking(enabled: bool) -> None:
         raise RuntimeError(f"the camera did not {action} native smart tracking")
 
 
-def prepare_person_tracking() -> None:
+def prepare_person_tracking(progress: ProgressCallback = no_progress) -> None:
     """Enable native person tracking and hide firmware detection rectangles.
 
     Preserve the camera's existing smart-recognition type and threshold while
     changing only the rectangle overlay. Read both settings back so seek_a_person
     never silently continues after a firmware that ignored either command.
     """
+    progress("Reading the camera's person-recognition settings")
     smd_attr, _ = request("/cgi-bin/hi3510/param.cgi", {"cmd": "getsmdattr"})
     smd_ex, _ = request("/cgi-bin/hi3510/param.cgi", {"cmd": "getsmdex"})
     settings = {**parse_firmware_variables(smd_attr), **parse_firmware_variables(smd_ex)}
     smd_type = settings.get("smd_type", "0")
     smd_threshold = settings.get("smd_gthresh", settings.get("smd_threshold", "34"))
 
+    progress("Enabling native SmartTrack")
     set_native_smart_tracking(True)
+    progress("Disabling recognition-object rectangles while preserving detection settings")
     request(
         "/cgi-bin/hi3510/param.cgi",
         {"cmd": "setsmdex", "-smd_rect": "0", "-smd_type": smd_type, "-smd_gthresh": smd_threshold},
@@ -125,6 +151,7 @@ def prepare_person_tracking() -> None:
     rectangle = parse_firmware_variables(rectangle_body)
     if rectangle.get("smd_rect") != "0":
         raise RuntimeError("the camera did not disable the recognition-object rectangle")
+    progress("Camera tracking settings are ready")
 
 
 def capture_rtsp_frame(quality: str) -> bytes:
@@ -300,7 +327,11 @@ def detect_current_view(targets: list[str], colors: list[str], confidence: float
     return []
 
 
-def wait_for_native_person_center(confidence: float, tolerance: float) -> tuple[dict[str, Any], bytes, int]:
+def wait_for_native_person_center(
+    confidence: float,
+    tolerance: float,
+    progress: ProgressCallback = no_progress,
+) -> tuple[dict[str, Any], bytes, int]:
     """Wait for firmware SmartTrack, then verify centering on the returned frame.
 
     No PTZ command is issued here: once YOLO has found a person, native camera
@@ -311,17 +342,21 @@ def wait_for_native_person_center(confidence: float, tolerance: float) -> tuple[
     observations = 0
     while time.monotonic() < deadline:
         observations += 1
+        progress(f"Waiting for native SmartTrack to centre the person (observation {observations})")
         sub_matches = detect_objects(capture_rtsp_frame("sub"), ["person"], [], confidence)
         target = select_target(sub_matches)
         if target is not None:
             dx, dy = target_offset(target)
             if abs(dx) <= tolerance and abs(dy) <= tolerance:
+                progress("The person is centred in the preview; verifying the final high-resolution frame")
                 high_res = capture_rtsp_frame("main")
                 main_target = select_target(detect_objects(high_res, ["person"], [], confidence))
                 if main_target is not None:
                     main_dx, main_dy = target_offset(main_target)
                     if abs(main_dx) <= tolerance and abs(main_dy) <= tolerance:
+                        progress("The final high-resolution frame is centred")
                         return main_target, high_res, observations
+                progress("High-resolution verification was not centred; continuing to observe")
         time.sleep(NATIVE_TRACKING_SAMPLE_INTERVAL_SECONDS)
     raise RuntimeError(
         f"native SmartTrack did not centre the detected person within "
@@ -345,7 +380,7 @@ def text_result(value: str) -> dict[str, Any]:
 
 
 
-def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def call_tool(name: str, arguments: dict[str, Any], progress: ProgressCallback = no_progress) -> dict[str, Any]:
     if not isinstance(arguments, dict):
         raise ValueError("tool arguments must be an object")
     if name == "entrust_eyes":
@@ -361,13 +396,15 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         store_credentials(host.strip(), username.strip(), password)
         return text_result(f"The eyes are entrusted to host {HOST} (user {USERNAME}); the password was remembered without being echoed.")
     if name == "seek_a_person":
-        prepare_person_tracking()
+        progress("Starting person search")
+        prepare_person_tracking(progress)
         arguments = {"confidence": 0.45, "center_tolerance": 0.06, **arguments, "targets": ["person"], "colors": [], "_native_tracking": True}
         name = "search_the_view"
     if name == "describe_the_eyes":
         body, _ = request("/cgi-bin/hi3510/param.cgi", {"cmd": "getserverinfo"})
         return text_result(body.decode("utf-8", errors="replace"))
     if name == "look_now":
+        progress("Capturing a camera frame")
         jpeg = capture_rtsp_frame(arguments.get("quality", "sub"))
         return {"content": [{"type": "image", "data": base64.b64encode(jpeg).decode(), "mimeType": "image/jpeg"}]}
     if name == "share_the_view":
@@ -383,7 +420,9 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("speed must be between 1 and 10")
         if not 1 <= steps <= 30:
             raise ValueError("steps must be between 1 and 30")
+        progress("Disabling native SmartTrack before manual PTZ movement")
         set_native_smart_tracking(False)
+        progress(f"Turning the camera {direction}")
         move_ptz(direction, speed, steps)
         return text_result("PTZ command sent.")
     if name == "search_the_view":
@@ -407,20 +446,26 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("center_tolerance must be 0.03–0.3")
         native_tracking = bool(arguments.get("_native_tracking"))
         if not native_tracking:
+            progress("Disabling native SmartTrack before object search")
             set_native_smart_tracking(False)
         positions = ["current view", *[f"after {move} move {index + 1}" for index, move in enumerate(moves)]]
         for index, position in enumerate(positions):
+            progress(f"Running YOLO in {position} (view {index + 1} of {len(positions)})")
             matches = detect_current_view(targets, colors, confidence)
             if matches:
+                progress(f"YOLO found a target in {position}")
                 target = select_target(matches)
                 assert target is not None
                 if native_tracking:
-                    target, high_res, observations = wait_for_native_person_center(confidence, center_tolerance)
+                    progress("Stopping manual search and giving native SmartTrack exclusive PTZ control")
+                    target, high_res, observations = wait_for_native_person_center(confidence, center_tolerance, progress)
                     encoded_high_res = base64.b64encode(high_res).decode()
                     # Keep firmware tracking in exclusive control through final
                     # centring and capture. Disable it only after the exact JPEG
                     # to be returned has passed main-stream YOLO verification.
+                    progress("Final photograph verified; disabling native SmartTrack")
                     set_native_smart_tracking(False)
+                    progress("Person search complete")
                     summary = {"found": True, "position": position, "object": target, "centered": True, "centering_method": "camera_native_smarttrack", "native_tracking_observations": observations, "manual_centering_adjustments": 0, "native_tracking_enabled_after_capture": False, "gaze_fixed_on_position": True, "note": "YOLO found the person; native SmartTrack centred them, the returned main-stream frame was verified, and SmartTrack was then disabled."}
                     return {"content": [{"type": "text", "text": json.dumps(summary, ensure_ascii=False)}, {"type": "image", "data": encoded_high_res, "mimeType": "image/jpeg"}]}
                 centered = False
@@ -428,6 +473,7 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
                 reverse_x = False
                 reverse_y = False
                 while adjustments < MAX_CENTERING_MOVES:
+                    progress(f"Manually centring the target (adjustment {adjustments + 1} of {MAX_CENTERING_MOVES})")
                     centered, axis, previous_error = center_target(target, center_tolerance, speed, reverse_x, reverse_y)
                     if centered:
                         centered = True
@@ -457,8 +503,11 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
                 return {"content": [{"type": "text", "text": json.dumps(summary, ensure_ascii=False)}, {"type": "image", "data": base64.b64encode(high_res).decode(), "mimeType": "image/jpeg"}]}
             if index < len(moves):
                 # No target in this view: cover ground quickly before sampling again.
+                progress(f"No target found; turning {moves[index]} to inspect the next view")
                 move_ptz(moves[index], speed, max(MIN_SEARCH_MOVE_STEPS, steps))
+                progress("Waiting for the camera image to settle")
                 wait_for_ptz_settle()
+        progress("Search complete; no matching target was found")
         return text_result(json.dumps({"found": False, "views_checked": len(positions), "gaze_fixed_on_position": False}, ensure_ascii=False))
     raise ValueError(f"unknown tool: {name}")
 
@@ -503,7 +552,11 @@ def handle(message: dict[str, Any]) -> None:
             params = message.get("params", {})
             if not isinstance(params, dict):
                 raise ValueError("tools/call params must be an object")
-            result = call_tool(params["name"], params.get("arguments", {}))
+            metadata = params.get("_meta", {})
+            if metadata is not None and not isinstance(metadata, dict):
+                raise ValueError("tools/call _meta must be an object")
+            token = (metadata or {}).get("progressToken")
+            result = call_tool(params["name"], params.get("arguments", {}), progress_notifier(token))
         elif method in {"resources/list", "resourceTemplates/list", "prompts/list"}:
             key = {"resources/list": "resources", "resourceTemplates/list": "resourceTemplates", "prompts/list": "prompts"}[method]
             result = {key: []}
